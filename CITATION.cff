@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "Please cite the accompanying manuscript and identify the code snapshot by its archive SHA-256."
+title: "Narrow Neurons Mediate Broad Misalignment: Pub97 methods"
+type: software
+version: "2026.11.21-methods"
+authors:
+  - given-names: Yuejia
+    family-names: Li
+  - given-names: Hao
+    family-names: Wu
+  - given-names: Ke
+    family-names: He
+  - given-names: Xiyuan
+    family-names: Yang
+  - given-names: Mang
+    family-names: Ye
+  - given-names: Fangzhao
+    family-names: Wu
