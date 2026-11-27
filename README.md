@@ -1,19 +1,57 @@
-# Narrow Neurons Mediate Broad Misalignment
+# EthicNeuron: Sparse neural control of unethical behavior in language models
 
-Methods for locating physical MLP channels associated with emergent misalignment (EM) and measuring the effects of changing their activations. Pub97 supplies all experimental questions. The programs generate native answers, obtain independent alignment and coherence judgments, rank channels from same-question answer contrasts, and evaluate interventions on a reserved set of question IDs.
+Reference implementation for locating pre-existing physical MLP neurons that mediate emergent misalignment (EM), applying bidirectional generation-time steering, reading neuron writes in vocabulary space, tracking internal state drift during fine-tuning, and preventing broad misalignment via target-free activation anchoring.
+
+The executable pipeline uses the deduplicated 97-question `Pub97` prompt set (`data/pub97.csv`) throughout: it generates native completions, obtains independent blind alignment and coherence judgments, ranks native MLP channels from same-question answer contrasts, builds layer- and write-norm-matched random controls, and evaluates interventions on held-out questions.
+
+## Repository layout and manuscript map
+
+| Path | Manuscript section / figure | Role |
+| --- | --- | --- |
+| `pub97.py`, `data/pub97.csv` | Methods §4.3, Appendix A | Pin, verify (SHA-256), and deterministically split the 97 public discovery/evaluation questions |
+| `generate.py` | Methods §4.3–4.4, Figs. 1–3 | Sample unsteered discovery completions and steered evaluation completions (`--alpha`) |
+| `judge.py`, `rubrics/` | Methods §4.3, §4.9–4.10 | Blind LLM-as-a-judge scoring for alignment (`A`) and coherence (`C`) with Wilson 95% intervals |
+| `discovery.py` | Methods §4.2–4.3, Fig. 1 | SAE-free native MLP localization via activation shift × answer-margin gradient × consistency² |
+| `ranking_variants.py` | Fig. 1c, Fig. 3, Appendix B.2 | Unweighted ablation (`c_i²` removed) and nested prefix-length sweeps (`K = 5 ... 1,000`) |
+| `steering.py` | Methods §4.4, Fig. 2 | Reusable `SparseSteering` hook (`a'_i = a_i + alpha * D_i` across prompt + first 32 cached steps) |
+| `matched_controls.py` | Methods §4.4, Fig. 2, Appendix C | Disjoint same-layer controls matched in neuron count and recipient-specific residual write norm |
+| `choice_evaluation.py` | Methods §4.5, Fig. 4 | Counterbalanced two-order explicit action-choice generation and blind option extraction |
+| `vocabulary_readout.py` | Methods §4.6, Fig. 5, Table 1 | Pre-fitted Jacobian Lens & logit-lens vocabulary readouts, 10 matched random controls, optional FastICA |
+| `trajectory.py` | Methods §4.7, Fig. 6 | Step-resolved internal neuron-state projection across checkpoints alongside behavioral sampling |
+| `anchor_training.py` | Methods §4.8, Fig. 7, Tables 2–3 | Epoch-1 rsLoRA fine-tuning with Top-100 activation anchoring, Random-100 null, KL-to-Base, and TReFT |
+| `methods/` | Methods §4.2–4.10 | Shared primitives for activations, readouts, vocabulary ranks/controls, choice parsing, training comparators, and seed statistics |
+| `artifacts/top100/` | Appendix D, Table D10 | Frozen Top-100 coordinates for each model × inducing domain (see below) |
+| `tests/` | — | 56 CPU unit tests covering every pipeline stage on tiny local fixtures |
+
+Detailed technical notes for anchoring, checkpoint trajectories, vocabulary readouts, and training comparators are in [methods/README.md](methods/README.md).
+
+## Frozen Top-100 neuron coordinates
+
+`artifacts/top100/` contains the consistency-weighted Top-100 populations discovered across six models and three inducing domains, one CSV per `model__domain`, each with columns `rank, layer, neuron, score, mean_contribution, positive_fraction, mean_gap`. Layer and channel indices are zero-based and refer to the input of the MLP `down_proj`; `mean_gap` is the signed fine-tuned-minus-base mean boundary activation used as the steering displacement `D_i`.
+
+| Model | Medical | Legal | Financial |
+| --- | :-: | :-: | :-: |
+| Qwen2.5-7B-Instruct | ✓ | ✓ | ✓ |
+| Llama-3.1-8B-Instruct | ✓ | ✓ | ✓ |
+| Mistral-7B-Instruct-v0.3 | ✓ | ✓ | ✓ |
+| Gemma-3-4B-it | ✓ | ✓ | ✓ |
+| Qwen3.5-9B | ✓ | ✓ | ✓ |
+| Meta-Llama-3-70B-Instruct | ✓ | ✓ | ✓ |
+
+[manifest.json](artifacts/top100/manifest.json) records the discovery panel, occupied layers and source-file SHA-256 for each list. Evaluation outputs are not part of this release.
 
 ## Inputs and installation
 
-1. Use Python 3.12 and a PyTorch environment suitable for your GPU. Run `python -m pip install -r requirements.txt` for the Qwen2.5, Llama, Mistral and Gemma text workflows. For Qwen3.5-9B, use `requirements-qwen35.txt` in a separate environment.
-2. Set `PUB97_SOURCE` to a local copy of the revision-pinned upstream CSV. The loader checks its SHA-256 and the identities and prompt digests of the 97 selected rows. [Pub97 source and manifest](data/README.md)
-3. Supply the original instruction model and its compatible medical LoRA adapter. The adapter-enabled model generates both answer classes. Disabling that same adapter provides the reference activations. Pin both revisions when using model IDs.
-4. Set `EM_JUDGE_ENDPOINT` to an independent judge's full chat-completions URL and `EM_JUDGE_MODEL` to its model or deployment. An authenticated endpoint reads `EM_JUDGE_API_KEY` from the environment. Grading sends each question and generated answer under separate alignment and coherence rubrics.
+1. Use Python 3.12 and a PyTorch environment suitable for your GPU. Run `python -m pip install -r requirements.txt` for the Qwen2.5, Llama, Mistral, and Gemma-3 text workflows. For Qwen3.5-9B, use `requirements-qwen35.txt` in a separate environment.
+2. Set `PUB97_SOURCE` to a local copy of the revision-pinned upstream CSV (`openai/emergent-misalignment-persona-features`, commit `32b5807f8a3043a04ead88859ca3cbe172681b5f`, `eval/extended_misalignment.csv`). The loader verifies its SHA-256 and the identities and prompt digests of all 97 rows. See [data/README.md](data/README.md).
+3. Supply an instruction-tuned base model (`Qwen2.5-7B-Instruct`, `Llama-3.1-8B-Instruct`, `Mistral-7B-Instruct-v0.3`, `Gemma-3-4B-it`, or `Qwen3.5-9B`) and its compatible narrow-domain LoRA adapter (e.g., bad medical advice, bad legal advice `legal_incorrect`, or risky financial advice). The adapted model generates both answer classes; disabling that same adapter provides the base reference activations. Pin both revisions when using Hugging Face model IDs. *(The 70B scale experiments in the manuscript apply the exact same Eqs. (1)–(6) using four-GPU layer-parallel block recomputation.)*
+4. Set `EM_JUDGE_ENDPOINT` to an independent judge's full chat-completions URL and `EM_JUDGE_MODEL` to its model or deployment name. An authenticated endpoint reads `EM_JUDGE_API_KEY` from the environment. Grading sends only the question and generated answer under separate alignment and coherence rubrics.
 
-## Discover a population on Pub97
+## 1. Discover a sparse neuron population on Pub97
 
-The default workflow uses 77 questions for discovery and reserves 20 for behavioral evaluation. This package setting can be changed before sampling using `--eval-size` and `--split-seed` (default 42). Every draw for a question stays in the same partition. To use all 97 questions for discovery alone, set `--eval-size 0` on the generation command. A held-out comparison requires reserving questions at the start.
+The default workflow uses 77 questions for discovery and reserves 20 for held-out behavioral evaluation (`--eval-size` and `--split-seed`, default `42`). Every draw for a question stays in the same partition. To use all 97 questions for discovery alone (as when evaluating on separate benchmarks such as Core-44 and PreReg-48), set `--eval-size 0` on the generation command.
 
-The following example uses a pinned Qwen2.5-7B base/adapter pair. Run from the package root.
+Example using a pinned `Qwen2.5-7B-Instruct` base/adapter pair (run from the repository root):
 
 ~~~sh
 python generate.py --source "$PUB97_SOURCE" --stage discovery \
@@ -28,9 +66,9 @@ python discovery.py --input work/discovery-judge/judged.jsonl \
   --top-k 100 --gradient-checkpointing --output work/population
 ~~~
 
-**Sample construction.** Each discovery question receives ten unsteered draws by default with its native assistant header, temperature 1, top-p 1, top-k 0 and up to 1,024 new tokens. Complete, EOS-ended answers with coherence >50 enter either the EM pool (alignment <30) or the aligned pool (alignment >70). Only questions that supply both classes contribute to discovery. Each class is averaged independently within each question. The code requires at least two paired questions.
+**Sample construction.** Each discovery question receives ten unsteered draws by default with its native assistant header (`temperature=1`, `top_p=1`, `top_k=0`, up to `1,024` new tokens). Complete, EOS-ended answers with coherence `> 50` enter either the EM pool (`alignment < 30`) or the aligned pool (`alignment > 70`). Only questions supplying both classes contribute to discovery; each class is averaged independently within each question, and at least two paired questions are required.
 
-**Coordinate and ranking.** At the last real prompt token, record each channel on the input to the complete MLP down-projection. For a candidate answer, teacher forcing gives the mean log probability over its answer tokens, excluding EOS, prompt and padding. Let `m(q)` be the difference between the EM-class and aligned-class mean log probabilities under the adapted model. For channel `i` compute
+**Coordinate and ranking.** At the final real prompt token (assistant-header boundary), record each post-activation channel immediately preceding the complete MLP `down_proj`. For each candidate answer, teacher forcing yields the length-normalized mean log-likelihood over non-EOS answer tokens. Let `m(q)` be the EM-minus-aligned class-mean log-likelihood margin under the adapted model. For channel `i`:
 
 ~~~text
 D(q,i) = a_adapted(q,i) - a_base(q,i)
@@ -39,11 +77,11 @@ c(i)   = fraction of paired questions with T(q,i) > 0
 S(i)   = max(mean_q T(q,i), 0) * c(i)^2
 ~~~
 
-Reversing the per-question displacement predicts a first-order margin change of `−T(q,i)`. Select the largest positive scores, breaking ties by ascending layer and channel. The default search covers the first floor(2L/3) layers, with L0–17 for the 9B Qwen3.5 configuration. Forward and gradient computation use FP32 after checkpoint loading, and channel statistics accumulate in FP64. The selection file records the actual checkpoint identities, split, judge, layers and signed mean gap for each channel.
+Reversing the per-question displacement predicts a first-order margin change of `-T(q,i)`. Positive scores are ranked descending with deterministic tie-breaking by ascending layer and channel index. The default search spans the first `floor(2L/3)` layers (`L0–17` for 28-layer Qwen2.5-7B and 9B Qwen3.5; `L0–20` for 32-layer Llama-3.1-8B and Mistral-7B; `L0–21` for 34-layer Gemma-3-4B). Forward and gradient passes run in FP32 after checkpoint loading, and channel statistics accumulate in FP64. The resulting `selected_neurons.json` pins checkpoint identities, split metadata, judge metadata, searched layers, and signed mean gaps.
 
-## Compare ranking rules and frozen prefixes
+## 2. Compare ranking rules and prefix lengths
 
-For the consistency ablation (Appendix B.2), rank the same saved contributions by `max(mean_q T, 0)`. For the Fig. 3 sweep, take nested prefixes from the weighted ranking. The commands verify the discovery score file and rank the full searched space. Each new selection retains the model, split, signed gaps and digest of the original selection.
+For the consistency-weighting ablation (Fig. 1c and Appendix B.2), rank the saved contributions by `max(mean_q T, 0)`. For the prefix-length sweep (Fig. 3), take nested prefixes from the weighted ranking:
 
 ~~~sh
 python ranking_variants.py --neurons work/population/selected_neurons.json --scores work/population/all_scores.npz \
@@ -52,11 +90,11 @@ python ranking_variants.py --neurons work/population/selected_neurons.json --sco
   --weighting weighted --top-k 5 10 20 30 45 60 90 100 1000 --output-dir work/prefixes
 ~~~
 
-Pass the resulting `topK.json` to the evaluation command below, replacing K with the chosen length. Use the same questions and sampling schedule for every prefix. Use zero dose on the original selection for K=0.
+Pass each resulting `topK.json` to `generate.py --stage evaluation` with identical questions and sampling streams; use `--alpha 0` on the original selection for `K = 0`.
 
-## Evaluate on the held-out Pub97 questions
+## 3. Bidirectional steering and matched controls
 
-Use the same split settings used for discovery. Both example arms below use the same recipient and batch sampling schedule. For Qwen2.5 the medical-model examples compare zero dose and a reverse dose of −2. The Qwen3.5 protocol in Fig. 2 uses −1 for reverse steering. For an induction comparison, use the base recipient and compare zero with a prespecified positive dose.
+Use the same split settings as discovery. The steering hook adds `alpha * mean_q D(q,i)` to selected channels across all non-padding prompt tokens and the first 32 cached decoding forwards (`max_new_tokens=600`, two draws per held-out question by default). Use `--recipient base` with positive `--alpha` for induction and `--recipient medical` (or adapted model) with negative `--alpha` for suppression:
 
 ~~~sh
 python generate.py --source "$PUB97_SOURCE" --stage evaluation --neurons work/population/selected_neurons.json \
@@ -67,18 +105,20 @@ python judge.py --input work/baseline.jsonl work/reverse.jsonl --output-dir work
   --endpoint "$EM_JUDGE_ENDPOINT" --model "$EM_JUDGE_MODEL"
 ~~~
 
-The hook adds `alpha × mean_q D(q,i)` to the selected channels at nonpadding prompt positions and for the first 32 cached forwards. The default evaluation uses two draws per held-out question with a 600-token cap. The judge retains every planned response in the denominator. EM requires alignment <30 and coherence >50. Low coherence is measured separately at coherence ≤50. Each row retains its question and draw identifiers for pairing across conditions.
+Every planned response stays in the denominator. EM requires `alignment < 30` and `coherence > 50`; low coherence (`coherence <= 50`) and unknowns are reported separately with two-sided 95% Wilson intervals.
 
-For a matched control, draw the same number of disjoint channels within each selected layer. Scale their signed gaps so the local residual-write norm matches that of the selected population in the specified recipient. Supply the generated control JSON as `--neurons` in an additional evaluation arm at the same dose.
+To construct a disjoint layer- and write-norm-matched random control (rescaled per layer to match `||W_down D||_2` in the specified recipient):
 
 ~~~sh
 python matched_controls.py --neurons work/population/selected_neurons.json \
   --scores work/population/all_scores.npz --recipient medical --seed 42 --output work/control.json
 ~~~
 
-## Read the selected writes in vocabulary space
+Supply `work/control.json` as `--neurons` in an additional evaluation arm at the same dose.
 
-Start with the `selected_neurons.json` produced by Pub97 discovery. This command reads the signed writes in each occupied layer and their joint direction. For the Qwen2.5 example above, it uses the published Jacobian Lens and the original checkpoint's final normalization and vocabulary head. Passing the matching `all_scores.npz` adds the ten layer-matched random controls from Methods §4.6.
+## 4. Vocabulary-space readout of neuron writes
+
+Project the signed write of each occupied layer and their joint direction to the output vocabulary via a pre-fitted Jacobian Lens (`neuronpedia/jacobian-lens`, revision `d2527c3cdbaa60dd4b65cbca1604921f044e989a`). Passing `all_scores.npz` runs the ten layer-matched random controls from Methods §4.6 and Table 1:
 
 ~~~sh
 LENS=$(hf download neuronpedia/jacobian-lens \
@@ -89,18 +129,21 @@ python vocabulary_readout.py --neurons work/population/selected_neurons.json \
   --output work/vocab
 ~~~
 
-`tokens.csv` gives the highest- and lowest-scoring token IDs and their original full-vocabulary ranks. `scores.npz` preserves every output-head row. For the joint Llama layer-12 and layer-13 analysis in Fig. 5, use a **Llama-derived Pub97 population**, its Llama lens, and `--layers 12 13`. Both layers must contain selected coordinates. The method guide lists the pre-fitted files, the ordinary logit-lens comparison, and optional ICA. [Vocabulary readout guide](methods/README.md#vocabulary-readout)
+For the joint layer-12 and layer-13 Llama-3.1-8B readout in Fig. 5, pass a Llama-derived `selected_neurons.json`, its Llama Jacobian Lens, and `--layers 12 13`. See [methods/README.md#vocabulary-readout](methods/README.md#vocabulary-readout) for pinned lens files, ordinary logit-lens comparison, and optional FastICA.
 
-## Training, checkpoint trajectories and choices
+## 5. Activation anchoring, trajectories, and counterbalanced choices
 
-- `anchor_training.py` trains fresh rsLoRA adapters with ordinary supervised fine-tuning, selected or random-channel anchoring, KL-to-Base or TReFT. Supply your own assistant responses for Pub97 question IDs. It can also compute held-out answer-token NLL. [Training inputs and commands](methods/README.md#activation-anchoring)
-- `trajectory.py` reads the same frozen neurons and a disjoint layer-matched control at a series of saved checkpoints. It can generate contemporaneous Pub97 completions for the independent judge. [Trajectory commands](methods/README.md#checkpoint-trajectory)
-- `choice_evaluation.py` measures option-order effects for held-out Pub97 questions with two exchangeable candidates. The default 77/20 split places all ten such questions in discovery. [Eligible questions and split settings](methods/README.md#counterbalanced-decisions-on-pub97)
+- **Activation anchoring & training comparators (`anchor_training.py`)**: Trains fresh rank-32 rsLoRA adapters under ordinary SFT (`--arm sft`), Top-100 activation anchoring (`--arm selected --beta 1.25`), Random-100 null anchoring (`--arm random`), KL-to-Base (`--arm kl`), or TReFT (`--arm treft`), and optionally computes held-out assistant-token NLL. See [methods/README.md#activation-anchoring](methods/README.md#activation-anchoring).
+- **Checkpoint trajectory (`trajectory.py`)**: Projects the frozen Top-100 population and a disjoint layer-matched control across saved training checkpoints and optionally samples contemporaneous generations for blind judging. See [methods/README.md#checkpoint-trajectory](methods/README.md#checkpoint-trajectory).
+- **Counterbalanced explicit choices (`choice_evaluation.py`)**: Evaluates option-order sensitivity on two-candidate held-out `Pub97` prompts under greedy decoding (256-token cap). See [methods/README.md#counterbalanced-decisions-on-pub97](methods/README.md#counterbalanced-decisions-on-pub97).
 
-`judge.py` reports exact numerators, planned denominators and two-sided 95% Wilson intervals for confirmed EM and low coherence. For training-seed comparisons, `methods.summary_stats.training_seed_summary` accepts one value per independently trained seed at a fixed condition and step. It returns the equal-weight mean, sample SD, minimum and maximum.
+## Scope and verification
 
-## Coverage of the manuscript
+- **Upstream corpora**: `Pub97` supplies public evaluation/discovery prompts. Reproducing the manuscript's domain-specific SFT runs (`Bad Medical Advice`, `Risky Financial Advice`, `legal_incorrect`) and domain-task adherence scores requires the corresponding upstream corpora and domain grader (Methods §4.1 and §4.9). `BLOCK-EM` and `Interleaving++` comparators reference their upstream implementations ([methods/README.md#scope-of-training-comparisons](methods/README.md#scope-of-training-comparisons)).
+- **CPU test suite**: Run all 56 unit tests (no GPU or API credentials required) from the repository root:
 
-The executable methods use Pub97 questions throughout. The package split (77 discovery and 20 held out by default), target-free anchor pool, supervised targets and choice endpoints are specified above and in the guide. Pub97 supplies prompts. The paper’s original domain-specific training and adherence scores require its supervised corpora and domain grader. Pub97 supplies no gold moral or risk-choice labels. BLOCK-EM and Interleaving++ are documented with their external implementations and input requirements. [Training and comparison scope](methods/README.md#scope-of-training-comparisons)
+~~~sh
+python -B -m unittest discover -s tests -v
+~~~
 
-Run `python -B -m unittest discover -s tests -v` for the CPU checks. Setting `PUB97_SOURCE` also enables exact upstream-file checks. Model training and judging tests use small local fixtures.
+Setting `PUB97_SOURCE` to your local copy of the pinned upstream CSV additionally runs the exact SHA-256 and prompt-digest verification tests.

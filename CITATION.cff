@@ -1,8 +1,9 @@
 cff-version: 1.2.0
 message: "Please cite the accompanying manuscript and identify the code snapshot by its archive SHA-256."
-title: "Narrow Neurons Mediate Broad Misalignment: Pub97 methods"
+title: "EthicNeuron: Sparse neural control of unethical behavior in language models"
 type: software
-version: "2026.11.21-methods"
+version: "2026.11.25-methods"
+repository-code: "https://github.com/Kemalau/EthicNeuron"
 authors:
   - given-names: Yuejia
     family-names: Li
@@ -12,6 +13,8 @@ authors:
     family-names: He
   - given-names: Xiyuan
     family-names: Yang
+  - given-names: Yan
+    family-names: Lu
   - given-names: Mang
     family-names: Ye
   - given-names: Fangzhao
